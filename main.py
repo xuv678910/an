@@ -38,7 +38,7 @@ def generate_briefing(today_str: str) -> str:
 
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model="gemini-3.8-flash",
+        model="gemini-flash-lite-latest",
         contents=build_prompt(today_str),
         config=types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())],
