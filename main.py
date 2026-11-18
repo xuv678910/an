@@ -5,6 +5,9 @@ import re
 import smtplib
 import ssl
 import sys
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
@@ -13,21 +16,78 @@ from google import genai
 from google.genai import types
 
 
-def build_prompt(today_str: str) -> str:
-    return f"""今天是 {today_str}（北京时间）。请通过 Google 搜索获取当日及前一日最新的全球金融与财政信息（重点覆盖亚洲、欧洲和美国市场），使用简体中文整理并输出一份内容详实、数据具体的《全球金融与财政每日简报》。
+RSS_FEEDS = [
+    (
+        "美欧股市与央行动态",
+        "https://news.google.com/rss/search?q=stock+market+Dow+S%26P+Nasdaq+STOXX+600+Fed+ECB&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "美国财政、关税与债市商品",
+        "https://news.google.com/rss/search?q=US+fiscal+deficit+treasury+yield+tariff+AI+chip+gold+oil&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "亚太市场与日本央行汇率",
+        "https://news.google.com/rss/search?q=Asia+stocks+Nikkei+KOSPI+BOJ+yen+euro+dollar&hl=en-US&gl=US&ceid=US:en",
+    ),
+    (
+        "中国金融、财政与宏观政策",
+        "https://news.google.com/rss/search?q="
+        + urllib.parse.quote("中国 财政 央行 货币政策 专项债 特别国债 A股 港股")
+        + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+    ),
+    (
+        "中国地产、消费与科技政策",
+        "https://news.google.com/rss/search?q="
+        + urllib.parse.quote("中国 房地产 消费 以旧换新 科技创新 金融开放")
+        + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans",
+    ),
+]
+
+
+def fetch_news_context(max_per_feed: int = 12) -> str:
+    """抓取最新全球财经与政策 RSS 新闻作为上下文。"""
+    sections = []
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; DailyFinanceBot/1.0)"}
+
+    for title, url in RSS_FEEDS:
+        items_text = []
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+            for item in root.findall("./channel/item")[:max_per_feed]:
+                news_title = (item.findtext("title") or "").strip()
+                pub_date = (item.findtext("pubDate") or "").strip()
+                if news_title:
+                    items_text.append(f"- [{pub_date}] {news_title}")
+        except Exception as exc:
+            items_text.append(f"- (抓取失败: {exc})")
+
+        sections.append(f"### {title}\n" + "\n".join(items_text))
+
+    return "\n\n".join(sections)
+
+
+def build_prompt(today_str: str, news_context: str) -> str:
+    return f"""今天是 {today_str}（北京时间）。以下是刚刚从全球新闻源检索到的最新财经与政策资讯摘要：
+
+{news_context}
+
+请严格基于上述最新资讯（严禁编造未出现的具体点位或虚假数字；若某项具体数值未在资讯中出现，可概述趋势并说明以实时行情为准），使用简体中文整理并输出一份内容详实、逻辑清晰的《全球金融与财政每日简报》。
 
 简报必须包含以下四个核心板块：
-1. **美、欧、亚太股市与板块动态**：列出美股三大指数（道琼斯、标普500、纳斯达克）、欧洲 STOXX 600、日韩（日经225、KOSPI）及 A 股/港股（上证、深证、创业板、科创50、恒生指数、恒生科技）等核心指数的最新点位、涨跌幅、成交特征及主要驱动因素。
-2. **主要央行货币政策动态**：详细追踪美联储（Fed）、欧洲央行（ECB）、中国人民银行（PBOC）及日本央行（BOJ）的最新利率路径、前瞻指引与结构性货币工具。
+1. **美、欧、亚太股市与板块动态**：覆盖美股三大指数（道琼斯、标普500、纳斯达克）、欧洲 STOXX 600、日韩及 A 股/港股的市场表现、板块轮动及核心驱动因素。
+2. **主要央行货币政策动态**：追踪美联储（Fed）、欧洲央行（ECB）、中国人民银行（PBOC）及日本央行（BOJ）的最新利率路径、前瞻指引与结构性货币工具。
 3. **中、美、欧重点政策与债券市场深度追踪**：
-   - **【中国政策】（需最为详尽）**：涵盖财政预算/专项债/结存限额/特别国债、货币利率机制改革、房地产（按揭贴息/收储等）与消费“两新”配套、科技创新产业扶持及资本市场开放政策；
-   - **【美国政策】**：涵盖联邦财政赤字与债务上限、关税与贸易政策、AI芯片/科技出口管制等最新政策及其对全球供应链与美债收益率、投资级企业债的影响；
-   - **【欧洲政策】**：涵盖欧元区财政赤字、国防/能源开支与法德等国主权信用利差动态。
-4. **汇率与大宗商品走势**：涵盖美元指数（DXY）、欧元、人民币、日元汇率以及现货黄金、国际原油（WTI、布伦特）的最新价位区间与核心驱动。
+   - **【中国政策】（需最为详尽）**：涵盖财政预算/专项债/特别国债、货币利率机制、房地产与消费“两新”配套、科技创新产业扶持及资本市场开放政策；
+   - **【美国政策】**：涵盖联邦财政赤字与债务、关税与贸易政策、AI芯片/科技出口管制及其对全球供应链与美债收益率、企业债的影响；
+   - **【欧洲政策】**：涵盖欧元区财政赤字、国防/能源开支与主权信用利差动态。
+4. **汇率与大宗商品走势**：涵盖美元指数（DXY）、欧元、人民币、日元汇率以及现货黄金、国际原油（WTI、布伦特）的最新走势与核心驱动。
 
 写作要求：
-- 所有数据与新闻必须基于最新检索到的真实信息，注明日期与具体数值，严禁编造数据。
-- 对文中出现的所有重要专业金融与财政名词，用 `> **【名词解释】...**` 或行内注释的形式，通俗说明其定义及对市场/资产价格的实际影响。
+- 注明新闻日期或最新时间窗口，尽量保留资讯中出现的具体数字、百分比与政策名称。
+- 对文中出现的所有重要专业金融与财政名词，用 `> **【名词解释】...**` 的形式，通俗说明其定义及对市场/资产价格的实际影响。
 - 直接输出完整的 Markdown 格式简报正文，不要输出多余的寒暄语。"""
 
 
@@ -36,14 +96,12 @@ def generate_briefing(today_str: str) -> str:
     if not api_key:
         raise RuntimeError("环境变量 GEMINI_API_KEY 未设置。")
 
-    client = genai.Client(api_key=api_key)
+    news_context = fetch_news_context()
+    client = genai.Client(api_key=api_key, http_options={"api_version": "v1beta"})
     response = client.models.generate_content(
         model="gemini-flash-lite-latest",
-        contents=build_prompt(today_str),
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-            temperature=0.2,
-        ),
+        contents=build_prompt(today_str, news_context),
+        config=types.GenerateContentConfig(temperature=0.2),
     )
     if not response.text:
         raise RuntimeError("Gemini API 返回内容为空。")
@@ -159,7 +217,7 @@ def send_email(subject: str, md_body: str) -> None:
 def main() -> int:
     now_cn = datetime.datetime.now(ZoneInfo("Asia/Shanghai"))
     today_str = now_cn.strftime("%Y-%m-%d")
-    print(f"[{today_str}] Generating global finance briefing...")
+    print(f"[{today_str}] Fetching latest financial news and generating briefing...")
 
     md_body = generate_briefing(today_str)
     subject = f"全球金融与财政每日简报 {today_str}"
