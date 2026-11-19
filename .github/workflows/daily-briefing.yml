@@ -2,8 +2,8 @@ name: Daily Global Finance Briefing
 
 on:
   schedule:
-    # UTC 01:00 = 北京时间 (Asia/Shanghai, UTC+8) 早上 09:00，仅周一至周五运行
-    - cron: '0 1 * * 1-5'
+    # UTC 01:07 = 北京时间 (Asia/Shanghai, UTC+8) 早上 09:07，避开 :00 整点排队高峰，仅周一至周五运行
+    - cron: '7 1 * * 1-5'
   workflow_dispatch: # 允许在 GitHub Actions 页面手动触发测试
 
 jobs:
